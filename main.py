@@ -1,216 +1,338 @@
+import os
 import random
 import time
+import traceback
+
 import pandas as pd
+from dotenv import load_dotenv
+from fake_useragent import UserAgent
+from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 from selenium import webdriver
-from selenium.common import TimeoutException
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.select import Select
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from fake_useragent import UserAgent
 
-def selenium_move(driver):
-    pass
-    # actions = ActionChains(driver)
-    # actions.move_by_offset(random.randint(10, 100), random.randint(10, 100)).perform()
-    # driver.execute_script("window.scrollBy(0, document.body.scrollHeight * 0.5);")
+load_dotenv()
 
-# Конфигурация авторизации
-ELIBRARY_LOGIN = "LOGIN"  # <- ВВЕДИТЕ ВАШ ЛОГИН
-ELIBRARY_PASSWORD = "PASSWORD"  # <- ВВЕДИТЕ ВАШ ПАРОЛЬ
+ELIBRARY_LOGIN = os.getenv("ELIBRARY_LOGIN")
+ELIBRARY_PASSWORD = os.getenv("ELIBRARY_PASSWORD")
+
+LOGIN_URL = "https://elibrary.ru/defaultx.asp"
+JOURNALS_URL = "https://www.elibrary.ru/titles.asp"
+JOURNAL_PROFILE_URL = "https://www.elibrary.ru/title_profile.asp?id="
+JOURNAL_ARTICLES_URL = "https://www.elibrary.ru/title_items.asp?id="
+ARTICLE_BASE_URL = "https://www.elibrary.ru/item.asp?id="
+
+INDEX_VAK = 3
+JOURNALS_CATEGORY = 'Мультидисциплинарные журналы по всем направлениям науки' + '  ' + '(1627)'
 
 
-def elibrary_login(driver):
-    """Функция для авторизации на eLibrary.ru"""
-    try:
-        # Переходим на страницу авторизации
-        driver.get("https://elibrary.ru/defaultx.asp")
-
-        # Ожидаем появления формы логина
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.NAME, "login")))
-
-        selenium_move(driver)
-        # Заполняем логин
-        login_field = driver.find_element(By.ID, "login")
-        login_field.clear()
-        login_field.send_keys(ELIBRARY_LOGIN)
-
-        selenium_move(driver)
-
-        # Заполняем пароль
-        password_field = driver.find_element(By.ID, "password")
-        password_field.clear()
-        password_field.send_keys(ELIBRARY_PASSWORD)
-
-        # Нажимаем кнопку входа
-        login_button = driver.find_element(By.XPATH, "//div[@class='butred' and contains(text(), 'Вход')]")
-        login_button.click()
-
-        print("Авторизация прошла успешно!")
-        time.sleep(random.uniform(1, 3))
-
-    except Exception as e:
-        print(f"Ошибка авторизации: {str(e)}")
-        driver.quit()
-        exit()
-
-def get_new_driver():
+def get_driver():
     user_agent = UserAgent().random
     options = webdriver.ChromeOptions()
     options.add_argument(f"user-agent={user_agent}")
     return webdriver.Chrome(options=options)
 
 
-def main():
-    # Создаем список для хранения данных
-    data = []
+def login(driver):
+    driver.get(LOGIN_URL)
+    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "login")))
+    driver.find_element(By.ID, "login").send_keys(ELIBRARY_LOGIN)
+    driver.find_element(By.ID, "password").send_keys(ELIBRARY_PASSWORD)
+    driver.find_element(By.XPATH, "//div[@class='butred' and contains(text(), 'Вход')]").click()
+    print("Успешная авторизация")
 
+
+def select_filters(driver):
+    driver.get(JOURNALS_URL)
+    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "vak")))
+
+    Select(driver.find_element(By.NAME, "rubriccode")).select_by_visible_text(JOURNALS_CATEGORY)
+    # .select_by_index(63))
+    Select(driver.find_element(By.NAME, "vak")).select_by_index(1 + INDEX_VAK)
+    driver.find_element(By.CSS_SELECTOR, "div.butred[onclick='title_search()']").click()
+
+
+def parse_journals_table(driver):
+    journals = []
+    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "restab")))
+    time.sleep(random.uniform(5, 7))
+
+    rows = driver.find_element(By.ID, "restab").find_elements(By.TAG_NAME, "tr")[3:60]
+    for row in rows:
+        cells = row.find_elements(By.TAG_NAME, "td")
+        jid = row.get_attribute("id")[1:]
+        journals.append({
+            "id": jid,
+            "link": f"{JOURNAL_PROFILE_URL}{jid}",
+            "article_link": f"{JOURNAL_ARTICLES_URL}{jid}",
+            "title": cells[2].text.split('\n')[0],
+            "author": cells[2].text.split('\n')[1],
+            "publications": cells[3].text,
+            "article": cells[4].text,
+            "quotes": cells[5].text
+        })
+    return journals
+
+
+def parse_journal_detail(driver, journal):
+    data = {}
+    driver.get(journal["link"])
+    time.sleep(random.uniform(15, 30))
     try:
-        driver = get_new_driver()
+        table = WebDriverWait(driver, 10).until(EC.presence_of_element_located(
+            (By.XPATH, "(//table[@width='580' and @cellspacing='0' and @cellpadding='3'])[2]")))
+        rows = table.find_elements(By.TAG_NAME, "tr")
 
-        # Переход на страницу eLibrary.ru
-        driver.get("https://www.elibrary.ru/titles.asp")
-        time.sleep(10)
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.NAME, "vak")))
-
-        # Раскрытие выпадающего списка "тематика журнала"
-        theme_dropdown = driver.find_element(By.NAME, "rubriccode")
-        theme_dropdown.click()
-
-        vak_select = Select(driver.find_element(By.NAME, "rubriccode"))
-        vak_select.select_by_index(63)
-
-        # Работа с перечнем ВАК
-        vak_dropdown = driver.find_element(By.NAME, "vak")
-        vak_dropdown.click()
-
-        vak_select = Select(driver.find_element(By.NAME, "vak"))
-        vak_select.select_by_index(3)
-
-        search_button = driver.find_element(By.CSS_SELECTOR, "div.butred[onclick='title_search()']")
-        search_button.click()
-
-        journals = {}
-        link = "https://elibrary.ru/title_profile.asp?id="
-        counter = 0
-
-        for step in range(0, 2):
-            WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.ID, "restab"))
-            )
-
-        results_table = driver.find_element(By.ID, "restab")
-        rows = results_table.find_elements(By.TAG_NAME, "tr")
-
-        for row in rows[3:]:
-            cells = row.find_elements(By.TAG_NAME, "td")
-            counter += 1
-            journals[counter] = {
-                "link": link + row.get_attribute("id")[1:],
-                "title": cells[2].text.split('\n')[0],
-                "author": cells[2].text.split('\n')[1],
-                "publications": cells[3].text,
-                "article": cells[4].text,
-                "quotes": cells[5].text,
-            }
-
-        if step < 1:
-            next_page = driver.find_element(By.XPATH, "//a[@title='Следующая страница']")
-            next_page.click()
-            time.sleep(random.randint(2, 4))
-
-        # Сбор данных
-        for number, journal in journals.items():
+        def safe_get(row, idx):
             try:
-                driver.get(journal["link"])
-                WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.ID, "footer")))
-                table = WebDriverWait(driver, 10).until(EC.presence_of_element_located(
-                    (By.XPATH, "(//table[@width='580' and @cellspacing='0' and @cellpadding='3'])[2]")))
+                return row.find_elements(By.TAG_NAME, "td")[idx].text
+            except:
+                return ""
 
-                rows = table.find_elements(By.TAG_NAME, "tr")
+        count_articles = safe_get(rows[3], -1)
+        views_year = safe_get(rows[59], -1)
 
-                # Извлекаем данные
-                count_of_articles = rows[3].find_elements(By.TAG_NAME, "td")[-1].text
-                science_index = rows[5].find_elements(By.TAG_NAME, "td")[-1].text
-                index_hirsha = rows[46].find_elements(By.TAG_NAME, "td")[-1].text
-                index_herfindal = rows[49].find_elements(By.TAG_NAME, "td")[-1].text
-                index_jinny = rows[53].find_elements(By.TAG_NAME, "td")[-1].text
-                views_per_year = rows[59].find_elements(By.TAG_NAME, "td")[-1].text
+        try:
+            views_per_article = int(views_year) / int(count_articles)
+        except:
+            views_per_article = 0
 
-                # Рассчет показателя
-                try:
-                    views_per_article = int(views_per_year) / int(count_of_articles)
-                except (ValueError, ZeroDivisionError):
-                    views_per_article = 0
+        data.update({
+            'link': journal["link"],
+            'category': JOURNALS_CATEGORY,
+            'title': journal["title"],
+            'author': journal["author"],
+            'vak': INDEX_VAK,
+            'publications': journal["publications"],
+            'article': journal["article"],
+            'quotes': journal["quotes"],
+            'science_index': safe_get(rows[5], -1),
+            'index_hirsha': safe_get(rows[46], -1),
+            'index_herfindal': safe_get(rows[49], -1),
+            'index_jinny': safe_get(rows[53], -1),
+            'views_per_year': views_year,
+            'count_of_articles': count_articles,
+            'views_per_article': views_per_article
+        })
+        return data
+    except TimeoutException:
+        print(f"Timeout при загрузке данных журнала {journal['title']}")
+        return None
 
-                # Добавляем данные в список
-                data.append({
-                    '№': number,
-                    'link': journal["link"],
-                    'title': journal["title"],
-                    'author': journal["author"],
-                    'publications': journal["publications"],
-                    'article': journal["article"],
-                    'quotes': journal["quotes"],
-                    'science_index': science_index,
-                    'index_hirsha': index_hirsha,
-                    'index_herfindal': index_herfindal,
-                    'index_jinny': index_jinny,
-                    'views_per_year': views_per_year,
-                    'count_of_articles': count_of_articles,
-                    'views_per_article': views_per_article
+
+def parse_articles(driver, article_link, journal_title):
+    articles = []
+    driver.get(article_link)
+    time.sleep(random.uniform(15, 30))
+    try:
+        WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "hdr_years"))).click()
+        WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "year_2023"))).click()
+
+        time.sleep(random.uniform(3, 7))
+        driver.find_element(By.CSS_SELECTOR, "div.butred[onclick='pub_search()']").click()
+
+        time.sleep(random.uniform(3, 7))
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.ID, 'restab')))
+
+        list_articles = driver.find_element(By.ID, 'restab').find_elements(By.TAG_NAME, 'tr')[3:23]
+        rows = [item.get_attribute("id")[3:] for item in list_articles]
+
+        for aid in rows:
+            link = f"{ARTICLE_BASE_URL}{aid}"
+
+            driver.get(link)
+            time.sleep(random.uniform(15, 30))
+
+            try:
+                title_table = driver.find_element(
+                    By.XPATH,
+                    "(//table[@width='550' and @cellspacing='0' and @cellpadding='3' and @border='0'])[2]"
+                )
+                title = title_table.find_element(By.TAG_NAME, "tr").find_elements(By.TAG_NAME, "td")[1].text
+
+                author_table = driver.find_element(
+                    By.XPATH,
+                    "(//table[@width='550' and @cellspacing='0' and @cellpadding='3' and @border='0'])[3]"
+                )
+                author = author_table.find_element(By.TAG_NAME, "tr").find_elements(By.TAG_NAME, "td")[1].text.split('\n')[0]
+
+                keywords_table = driver.find_element(
+                    By.XPATH,
+                    "(//table[@width='550' and @border='0' and @cellspacing='0' and @cellpadding='3'])[5]"
+                )
+                keywords = keywords_table.find_elements(By.TAG_NAME, "tr")[1].find_elements(By.TAG_NAME, "td")[1].text
+
+                category_table = driver.find_element(
+                    By.XPATH,
+                    "(//table[@width='100%' and @border='0' and @cellspacing='0' and @cellpadding='3'])[2]"
+                )
+
+                category = category_table.find_element(By.TAG_NAME, "tr").find_elements(By.TAG_NAME, "td")[1].text
+
+                library_table = driver.find_element(
+                    By.XPATH,
+                    "(//table[@width='550' and @border='0' and @cellspacing='0' and @cellpadding='3'])[6]"
+                ).find_element(
+                    By.XPATH,
+                    "(//table[@width='100%' and @border='0' and @cellspacing='0' and @cellpadding='3'])"
+                )
+                library_tr_rows = library_table.find_elements(By.TAG_NAME, "tr")
+
+                include_RINC = library_tr_rows[0].find_elements(By.TAG_NAME, "td")[0].text.split(':')[1].strip(),
+                quotas_in_RINC = library_tr_rows[0].find_elements(By.TAG_NAME, "td")[1].text.split(':')[1].strip(),
+                include_core_RINC = library_tr_rows[1].find_elements(By.TAG_NAME, "td")[0].text.split(':')[1].strip(),
+                qoutas_core_RINC = library_tr_rows[1].find_elements(By.TAG_NAME, "td")[1].text.split(':')[1].strip(),
+                reviews = library_tr_rows[2].find_elements(By.TAG_NAME, "td")[0].text.split(':')[1].strip(),
+                percent_in_top_SI = library_tr_rows[2].find_elements(By.TAG_NAME, "td")[1].text.split(':')[1].strip(),
+
+                stats_table = driver.find_element(
+                    By.XPATH,
+                    "(//table[@width='100%' and @border='0' and @cellspacing='0' and @cellpadding='3'])[7]"
+                )
+                stats = stats_table.find_elements(By.TAG_NAME, "tr")
+
+                articles.append({
+                    'link': link,
+                    "title": title,
+                    "author": author,
+                    "keywords": keywords,
+                    "category": category,
+
+                    'include_RINC': include_RINC[0],
+                    'quotas_in_RINC': quotas_in_RINC[0],
+                    'include_core_RINC': include_core_RINC[0],
+                    'qoutas_core_RINC': qoutas_core_RINC[0],
+                    'reviews': reviews[0],
+                    'percent_in_top_SI': percent_in_top_SI[0],
+
+                    "views": stats[0].find_elements(By.TAG_NAME, "td")[0].text.split(':')[1].split()[0].strip(),
+                    "downloads": stats[0].find_elements(By.TAG_NAME, "td")[1].text.split(':')[1].split()[0].strip(),
+                    "collections": stats[0].find_elements(By.TAG_NAME, "td")[2].text.split(':')[1].strip(),
+                    "total_score": stats[1].find_elements(By.TAG_NAME, "td")[0].text.split(':')[1].strip(),
+                    "avg_score": stats[1].find_elements(By.TAG_NAME, "td")[1].text.split(':')[1],
+                    "comments": stats[1].find_elements(By.TAG_NAME, "td")[2].text.split(':')[1].strip(),
                 })
-            except TimeoutException as e:
-                continue
-            except Exception as e:
-                print(f"Ошибка при парсинге журнала {number}: {str(e)}")
+                time.sleep(random.uniform(15, 30))
 
-            time.sleep(random.randint(5, 6))
+            except Exception as e:
+                print(f"Ошибка при обработке статьи {link}: {e}")
+
+        if articles:
+            df = pd.DataFrame(articles)
+            with pd.ExcelWriter("journals_data.xlsx", engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
+                sheet_name = journal_title[:30].replace(" ", "_")
+                if sheet_name in writer.book.sheetnames:
+                    sheet = writer.book[sheet_name]
+                    startrow = sheet.max_row
+                else:
+                    startrow = 0
+
+                df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=startrow)
+
+            wb = load_workbook("journals_data.xlsx")
+            ws = wb[journal_title[:30].replace(" ", "_")]
+
+            header_font = Font(bold=True)
+            fill = PatternFill("solid", fgColor="D7E4BC")
+            align = Alignment(horizontal="center", vertical="top", wrap_text=True)
+            border = Border(bottom=Side(border_style="thin", color="000000"))
+
+            for col_num, column_title in enumerate(df.columns, 1):
+                cell = ws.cell(row=1, column=col_num)
+                cell.font = header_font
+                cell.fill = fill
+                cell.alignment = align
+                cell.border = border
+
+                max_length = max(
+                    [len(str(cell.value)) for cell in ws[get_column_letter(col_num)] if cell.value is not None] + [
+                        len(column_title)]
+                )
+                ws.column_dimensions[get_column_letter(col_num)].width = max_length + 2
+
+            wb.save("journals_data.xlsx")
+            print(f"Сохранено {len(articles)} статей для журнала {journal_title}")
 
     except Exception as e:
-        print(f"Ошибка: {e}")
-    finally:
-        # Сохраняем результат в Excel
-        if data:
-            df = pd.DataFrame(data)
-            try:
-                with pd.ExcelWriter('journals_data.xlsx', engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False, sheet_name='Журналы')
+        print(f"Ошибка при сборе статей для журнала {journal_title}: {e}")
 
-                    # Получаем объекты для форматирования
-                    workbook = writer.book
-                    worksheet = writer.sheets['Журналы']
 
-                    # Форматируем заголовки
-                    header_format = workbook.add_format({
-                        'bold': True,
-                        'text_wrap': True,
-                        'valign': 'top',
-                        'fg_color': '#D7E4BC',
-                        'border': 1
-                    })
-
-                    # Применяем форматирование к заголовкам
-                    for col_num, value in enumerate(df.columns.values):
-                        worksheet.write(0, col_num, value, header_format)
-
-                    # Автонастройка ширины столбцов
-                    for i, col in enumerate(df.columns):
-                        max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-                        worksheet.set_column(i, i, max_len)
-
-                print("Данные успешно сохранены в файл journals_data.xlsx")
-            except Exception as e:
-                print(f"Ошибка при сохранении файла: {str(e)}")
+def save_to_excel(records, path):
+    df = pd.DataFrame(records)
+    with pd.ExcelWriter(path, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
+        sheet_name = 'Журналы'
+        if sheet_name in writer.book.sheetnames:
+            sheet = writer.book[sheet_name]
+            startrow = sheet.max_row
         else:
-            print("Нет данных для сохранения")
+            startrow = 0
+        df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=startrow)
 
-        if 'driver' in locals():
-            driver.quit()
+    wb = load_workbook(path)
+    ws = wb['Журналы']
+
+    header_font = Font(bold=True)
+    fill = PatternFill("solid", fgColor="D7E4BC")
+    align = Alignment(horizontal="center", vertical="top", wrap_text=True)
+    border = Border(bottom=Side(border_style="thin", color="000000"))
+
+    for col_num, column_title in enumerate(df.columns, 1):
+        cell = ws.cell(row=1, column=col_num)
+        cell.font = header_font
+        cell.fill = fill
+        cell.alignment = align
+        cell.border = border
+
+        max_length = max(
+            [len(str(cell.value)) for cell in ws[get_column_letter(col_num)] if cell.value is not None] + [
+                len(column_title)]
+        )
+        ws.column_dimensions[get_column_letter(col_num)].width = max_length + 2
+
+    wb.save(path)
+    print(f"Файл успешно сохранён: {path}")
 
 
-if __name__ == "__main__":
+def main():
+    driver = get_driver()
+    records = []
+    try:
+        time.sleep(random.uniform(10, 20))
+        login(driver)
+
+        time.sleep(random.uniform(10, 20))
+        select_filters(driver)
+
+        time.sleep(random.uniform(10, 20))
+        journals = parse_journals_table(driver)
+
+        for journal in journals:
+            time.sleep(random.uniform(15, 30))
+            try:
+                record = parse_journal_detail(driver, journal)
+                if record:
+                    records.append(record)
+
+                    #time.sleep(random.uniform(10, 15))
+                    #parse_articles(driver, journal["article_link"], journal["title"])
+            except Exception as e:
+                print(f"Ошибка при обработке журнала: {journal['title']}")
+                print(traceback.format_exc())
+    except Exception as e:
+        print(f"Общая ошибка: {e}")
+        print(traceback.format_exc())
+    finally:
+        driver.quit()
+        if records:
+            save_to_excel(records, "journals_data.xlsx")
+        else:
+            print("Данных для сохранения нет")
+
+
+if __name__ == '__main__':
     main()
